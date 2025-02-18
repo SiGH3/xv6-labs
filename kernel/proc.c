@@ -127,6 +127,8 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  p->kama_syscall_trace = 0;
+
   return p;
 }
 
@@ -296,6 +298,8 @@ fork(void)
   np->state = RUNNABLE;
 
   release(&np->lock);
+
+  np->kama_syscall_trace = p->kama_syscall_trace;  //子进程继承父进程的syscall_trace
 
   return pid;
 }
@@ -691,5 +695,17 @@ procdump(void)
       state = "???";
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
+  }
+}
+
+// 统计处于互动状态的进程
+void 
+kama_procnum(uint64* dst){
+  *dst = 0;
+  struct proc* p;
+  for(p=proc;p<&proc[NPROC];p++){
+    if(p->state != UNUSED){
+      (*dst)++;
+    }
   }
 }
