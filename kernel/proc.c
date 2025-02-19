@@ -34,12 +34,13 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
+      //注释上述代码（为所有进程与分配内核栈的代码），变为创建进程的时候再创建内核栈
   }
   kvminithart();
 }
@@ -121,6 +122,18 @@ found:
     return 0;
   }
 
+  //为新进程创建独立的内核页表，并将内核所需要的各种映射添加到新页表上
+  p->ly_kernerpgtbl = ly_kvminit_newpgtbl();
+
+  //分配一个物理页，作为新进程的内核栈使用
+  char* pa = kalloc();
+  if(pa == 0){
+    panic("kallo");
+  }
+  uint64 va = KSTACK((int)0);  //将内核栈映射到固定的逻辑地址上
+  kvmmap(p->ly_kernerpgtbl,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;   //记录内核栈的虚拟地址
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -149,8 +162,38 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  //p->state = UNUSED;
+  p->xstate = 0;
+
+  //释放进程的内核栈
+  void* kstack_pa = (void*)kvmpa(p->ly_kernerpgtbl,p->kstack);
+  kfree(kstack_pa);
+  p->kstack = 0;
+
+  // 不能使用proc_freepagetable释放页表，因为其不仅会释放页表本身还会把页表内所有的叶节点对应的物理页也释放掉
+  // 这会导致内核运行所需要的关键物理页被释放，造成内核崩溃
+
+  //递归释放进程独享的页表，释放页表本身所占用的空间，但不释放页表指向的物理页
+  ly_kvm_free_kernekpgtbl(p->ly_kernerpgtbl);
+  p->ly_kernerpgtbl = 0;
   p->state = UNUSED;
 }
+
+
+//递归释放进程独享的页表，释放页表本身所占用的空间，但不释放页表指向的物理页
+void
+ly_kvm_free_kernekpgtbl(pagetable_t pagetable){
+  for(int i = 0; i<512; i++){
+    pte_t pte = pagetable[i];
+    uint64 child = PTE2PA(pte);
+    if((pte&PTE_V)&&(pte&(PTE_R | PTE_W | PTE_X)) == 0){  // 如果该页表项指向更低一级的页表
+      ly_kvm_free_kernekpgtbl((pagetable_t)child);        // 递归释放更低一级的页表及其页表项
+      pagetable[i]=0;
+    }
+  }
+  kfree((void*)pagetable);   //释放当前页表所占用空间
+}
+
 
 // Create a user page table for a given process,
 // with no user memory, but with trampoline pages.
@@ -473,7 +516,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        //切换到进程独立的内核页表
+        w_satp(MAKE_SATP(p->ly_kernerpgtbl));
+        sfence_vma();    //清除快表缓存，刷新TLB缓存，以确保地址转换表的更改生效
+
+        // 调度，执行进程
         swtch(&c->context, &p->context);
+
+        // 切换回全局内核页表
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

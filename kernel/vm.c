@@ -19,33 +19,53 @@ extern char trampoline[]; // trampoline.S
  * create a direct-map page table for the kernel.
  */
 void
-kvminit()
-{
-  kernel_pagetable = (pagetable_t) kalloc();
-  memset(kernel_pagetable, 0, PGSIZE);
+ kvminit(){
+  //全局内核页表仍然使用kvmint函数来初始化
+  kernel_pagetable = ly_kvminit_newpgtbl();
 
-  // uart registers
-  kvmmap(UART0, UART0, PGSIZE, PTE_R | PTE_W);
+//   kernel_pagetable = (pagetable_t) kalloc();
+//   memset(kernel_pagetable, 0, PGSIZE);
+
+ }
+
+ pagetable_t
+ ly_kvminit_newpgtbl(){
+  pagetable_t pgtbl = (pagetable_t) kalloc();
+  memset(pgtbl,0,PGSIZE);
+
+  ly_kvm_map_pagetable(pgtbl);
+
+  return pgtbl;
+ }
+
+
+ void ly_kvm_map_pagetable(pagetable_t pgtbl){
+  //将各种内核需要的 direct mapping 添加到列表 pgtbl 中
+  
+  //uart registers
+  kvmmap(pgtbl, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
   // virtio mmio disk interface
-  kvmmap(VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  kvmmap(pgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // CLINT
-  kvmmap(CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  kvmmap(pgtbl, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
-  kvmmap(PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  kvmmap(pgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 
   // map kernel text executable and read-only.
-  kvmmap(KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  kvmmap(pgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
 
   // map kernel data and the physical RAM we'll make use of.
-  kvmmap((uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  kvmmap(pgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
-}
+  kvmmap(pgtbl, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  
+ }
+
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
@@ -115,9 +135,9 @@ walkaddr(pagetable_t pagetable, uint64 va)
 // only used when booting.
 // does not flush TLB or enable paging.
 void
-kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
+kvmmap(pagetable_t pgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
 {
-  if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
+  if(mappages(pgtbl, va, sz, pa, perm) != 0)
     panic("kvmmap");
 }
 
@@ -126,13 +146,13 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 // addresses on the stack.
 // assumes va is page aligned.
 uint64
-kvmpa(uint64 va)
+kvmpa(pagetable_t pgtbl, uint64 va)
 {
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(pgtbl, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -439,4 +459,34 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+//递归打印页表
+int ly_pgtblprint(pagetable_t pagetable, int depth){
+  //there are 2^9 = 512 PTES in a page table
+  for(int i=0;i<512;i++){
+    pte_t pte = pagetable[i];
+
+    if(pte&PTE_V){        //如果页表项有效，按格式打印页表项
+      printf("..");
+      for(int j=0;j<depth;j++){
+        printf(" ..");
+      }
+      printf("%d: pte %p pa %p\n",i,pte,PTE2PA(pte));
+
+      //如果该节点不是叶节点，递归打印子结点
+      if((pte & (PTE_R | PTE_W| PTE_X))==0){
+        //this PTE points to a lower_level page table
+        uint64 child = PTE2PA(pte);
+        ly_pgtblprint((pagetable_t)child,depth+1);
+      }
+    }
+  }
+  return 0;
+}
+
+//打印页表
+int ly_vmprint(pagetable_t pagetable){
+  printf("page table %p\n",pagetable);
+  return ly_pgtblprint(pagetable,0);
 }
