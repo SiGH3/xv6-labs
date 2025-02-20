@@ -123,7 +123,7 @@ found:
   }
 
   //为新进程创建独立的内核页表，并将内核所需要的各种映射添加到新页表上
-  p->ly_kernerpgtbl = ly_kvminit_newpgtbl();
+  p->ly_kernelpgtbl = ly_kvminit_newpgtbl();
 
   //分配一个物理页，作为新进程的内核栈使用
   char* pa = kalloc();
@@ -131,7 +131,7 @@ found:
     panic("kallo");
   }
   uint64 va = KSTACK((int)0);  //将内核栈映射到固定的逻辑地址上
-  kvmmap(p->ly_kernerpgtbl,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  kvmmap(p->ly_kernelpgtbl,va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
   p->kstack = va;   //记录内核栈的虚拟地址
 
   // Set up new context to start executing at forkret,
@@ -166,7 +166,7 @@ freeproc(struct proc *p)
   p->xstate = 0;
 
   //释放进程的内核栈
-  void* kstack_pa = (void*)kvmpa(p->ly_kernerpgtbl,p->kstack);
+  void* kstack_pa = (void*)kvmpa(p->ly_kernelpgtbl,p->kstack);
   kfree(kstack_pa);
   p->kstack = 0;
 
@@ -174,8 +174,8 @@ freeproc(struct proc *p)
   // 这会导致内核运行所需要的关键物理页被释放，造成内核崩溃
 
   //递归释放进程独享的页表，释放页表本身所占用的空间，但不释放页表指向的物理页
-  ly_kvm_free_kernekpgtbl(p->ly_kernerpgtbl);
-  p->ly_kernerpgtbl = 0;
+  ly_kvm_free_kernekpgtbl(p->ly_kernelpgtbl);
+  p->ly_kernelpgtbl = 0;
   p->state = UNUSED;
 }
 
@@ -263,6 +263,8 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  // 同步程序内存映射到进程内核页表中
+  ly_kvmcopymappings(p->pagetable, p->ly_kernelpgtbl, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -286,11 +288,21 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    uint64 newsz = sz + n;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+
+    // 内核页表中的映射同步扩大
+    if(ly_kvmcopymappings(p->pagetable,p->ly_kernelpgtbl,sz,n)!=0){
+      uvmdealloc(p->pagetable, newsz, sz);
+      return -1;
+    }
+    sz = newsz;
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uvmdealloc(p->pagetable, sz, sz + n);
+    //  内核页表中的映射同步缩小
+    sz = ly_kvmdealloc(p->ly_kernelpgtbl,sz,sz+n);
   }
   p->sz = sz;
   return 0;
@@ -311,7 +323,9 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  // 加入调用kvmcopymappings，将新进程用户页表映射拷贝一份到新进程内核页表中
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0 ||
+     ly_kvmcopymappings(np->pagetable, np->ly_kernelpgtbl, 0, p->sz)<0){
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -518,7 +532,7 @@ scheduler(void)
         c->proc = p;
 
         //切换到进程独立的内核页表
-        w_satp(MAKE_SATP(p->ly_kernerpgtbl));
+        w_satp(MAKE_SATP(p->ly_kernelpgtbl));
         sfence_vma();    //清除快表缓存，刷新TLB缓存，以确保地址转换表的更改生效
 
         // 调度，执行进程

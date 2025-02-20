@@ -182,6 +182,10 @@ int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ly_vmprint(pagetable_t pagetable);  //打印页表内容函数声明
 pagetable_t     ly_kvminit_newpgtbl();
 void            ly_kvm_map_pagetable(pagetable_t);
+int             ly_kvmcopymappings(pagetable_t, pagetable_t, uint64, uint64);
+uint64          ly_kvmdealloc(pagetable_t, uint64, uint64);
+int             copyin_new(pagetable_t, char*, uint64, uint64);
+int             copyinstr_new(pagetable_t, char*, uint64, uint64);
 
 // plic.c
 void            plicinit(void);
