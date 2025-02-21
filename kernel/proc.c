@@ -162,9 +162,7 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
-  //p->state = UNUSED;
-  p->xstate = 0;
-
+  
   //释放进程的内核栈
   void* kstack_pa = (void*)kvmpa(p->ly_kernelpgtbl,p->kstack);
   kfree(kstack_pa);
@@ -174,25 +172,12 @@ freeproc(struct proc *p)
   // 这会导致内核运行所需要的关键物理页被释放，造成内核崩溃
 
   //递归释放进程独享的页表，释放页表本身所占用的空间，但不释放页表指向的物理页
-  ly_kvm_free_kernekpgtbl(p->ly_kernelpgtbl);
+  ly_kvm_free_kernelpgtbl(p->ly_kernelpgtbl);
   p->ly_kernelpgtbl = 0;
   p->state = UNUSED;
 }
 
 
-//递归释放进程独享的页表，释放页表本身所占用的空间，但不释放页表指向的物理页
-void
-ly_kvm_free_kernekpgtbl(pagetable_t pagetable){
-  for(int i = 0; i<512; i++){
-    pte_t pte = pagetable[i];
-    uint64 child = PTE2PA(pte);
-    if((pte&PTE_V)&&(pte&(PTE_R | PTE_W | PTE_X)) == 0){  // 如果该页表项指向更低一级的页表
-      ly_kvm_free_kernekpgtbl((pagetable_t)child);        // 递归释放更低一级的页表及其页表项
-      pagetable[i]=0;
-    }
-  }
-  kfree((void*)pagetable);   //释放当前页表所占用空间
-}
 
 
 // Create a user page table for a given process,
@@ -263,6 +248,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+
   // 同步程序内存映射到进程内核页表中
   ly_kvmcopymappings(p->pagetable, p->ly_kernelpgtbl, 0, p->sz);
 
@@ -288,18 +274,19 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    uint64 newsz = sz + n;
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    uint64 newsz;
+    if((newsz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
 
     // 内核页表中的映射同步扩大
-    if(ly_kvmcopymappings(p->pagetable,p->ly_kernelpgtbl,sz,n)!=0){
+    if(ly_kvmcopymappings(p->pagetable, p->ly_kernelpgtbl, sz, n)!=0){
       uvmdealloc(p->pagetable, newsz, sz);
       return -1;
     }
     sz = newsz;
-  } else if(n < 0){
+  } 
+  else if(n < 0){
     uvmdealloc(p->pagetable, sz, sz + n);
     //  内核页表中的映射同步缩小
     sz = ly_kvmdealloc(p->ly_kernelpgtbl,sz,sz+n);

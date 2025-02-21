@@ -108,7 +108,7 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-void            ly_kvm_free_kernekpgtbl(pagetable_t);
+
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -180,12 +180,14 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ly_vmprint(pagetable_t pagetable);  //打印页表内容函数声明
+void            ly_kvm_map_pagetable(pagetable_t pgtbl); 
 pagetable_t     ly_kvminit_newpgtbl();
-void            ly_kvm_map_pagetable(pagetable_t);
+void            ly_kvm_free_kernelpgtbl(pagetable_t);
 int             ly_kvmcopymappings(pagetable_t, pagetable_t, uint64, uint64);
 uint64          ly_kvmdealloc(pagetable_t, uint64, uint64);
 int             copyin_new(pagetable_t, char*, uint64, uint64);
 int             copyinstr_new(pagetable_t, char*, uint64, uint64);
+
 
 // plic.c
 void            plicinit(void);
